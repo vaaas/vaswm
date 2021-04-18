@@ -63,6 +63,7 @@ def set_border(conn, window, size=None, colour=None):
 def arrange(conn, mon):
 	current_clients = [ x for x in mon.clients if x.workspace is mon.current_workspace ]
 	cols = min(CONF['cols'], len(current_clients))
+	if cols == 0: return
 	bw = 2*CONF['borderpx']
 	cw = (mon.w - bw) // cols
 	i = 0
