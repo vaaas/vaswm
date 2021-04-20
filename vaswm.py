@@ -2,6 +2,7 @@
 import xcffib as xcb
 import xcffib.xproto as xproto
 import inspect
+from collections import deque
 
 # TODO: focus https://www.x.org/releases/current/doc/man/man3/xcb_set_input_focus.3.xhtml
 
@@ -36,7 +37,7 @@ class Monitor:
 		self.h = root.height_in_pixels
 		self.workspaces = [ Workspace(x) for x in CONF['tags']]
 		self.current_workspace = self.workspaces[0]
-		self.clients = []
+		self.clients = deque()
 
 class Workspace:
 	def __init__(self, tag):
@@ -77,7 +78,7 @@ def resize(conn, window, x, y, w, h):
 	conn.core.ConfigureWindow(window, mask, [x,y,w,h])
 
 def setup(conn):
-	mask = xproto.EventMask.SubstructureNotify
+	mask = xproto.EventMask.SubstructureNotify | xproto.EventMask.SubstructureRedirect
 	setup = conn.get_setup()
 	root = setup.roots[0]
 	conn.core.ChangeWindowAttributesChecked(root.root, xproto.CW.EventMask, [mask])
@@ -87,9 +88,19 @@ def setup(conn):
 def loop(conn, mon):
 	while True:
 		e = conn.wait_for_event()
-		if isinstance(e, xproto.ConfigureNotifyEvent):
+		print(e)
+		if isinstance(e, xproto.EnterNotifyEvent):
+			pass
+			#set_border(conn, e.root, colour=CONF['colours']['accent'])
+			#conn.flush()
+		elif isinstance(e, xproto.LeaveNotifyEvent) and hasattr(e, 'window'):
+			pass
+			#set_border(conn, e.window, colour=CONF['colours']['default'])
+			#conn.flush()
+		elif isinstance(e, xproto.ConfigureNotifyEvent):
 			configure_request(conn, mon, e)
 		elif isinstance(e, xproto.MapNotifyEvent):
+			conn.core.
 			arrange(conn, mon)
 		elif isinstance(e, xproto.UnmapNotifyEvent):
 			unmap_request(conn, mon, e)
@@ -99,7 +110,9 @@ def configure_request(conn, mon, e):
 	if client: return client
 	client = Client(e, mon.current_workspace)
 	mon.clients.append(client)
+	conn.core.ChangeWindowAttributes(e.window, xproto.CW.EventMask, [xproto.EventMask.EnterWindow | xproto.EventMask.LeaveWindow])
 	set_border(conn, e.window, size=CONF['borderpx'], colour=CONF['colours']['default'])
+	conn.flush()
 
 def unmap_request(conn, mon, e):
 	i = find_index(window_is(e.window), mon.clients)
