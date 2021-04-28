@@ -24,6 +24,8 @@ window_is = lambda x: lambda c: c.window == x
 workspace_is = lambda x: lambda c: c.workspace == x
 bp = CONF['borderpx']
 
+apply = lambda f, *args: lambda: f(*args)
+
 def find(f, xs):
 	for x in xs:
 		if f(x):
@@ -131,17 +133,19 @@ def unmap_request(conn, mon, e):
 
 async def server(conn, mon):
 	fd = conn.get_file_descriptor()
-	asyncio.get_running_loop().add_reader(fd, lambda: poll(conn, mon))
-	server = await asyncio.start_unix_server(lambda a,b: request_handler(a,b, conn, mon), path='/tmp/vaswm.socket')
+	asyncio.get_running_loop().add_reader(fd, apply(poll, conn, mon))
+	server = await asyncio.start_unix_server(request_handler(conn, mon), path='/tmp/vaswm.socket')
 	print('serving on', server.sockets[0].getsockname())
 	await server.serve_forever()
 
-async def request_handler(reader, writer, conn, mon):
-	data = (await reader.read(128)).decode()
-	print('received', data)
-	writer.write('hello, world'.encode())
-	await writer.drain()
-	writer.close()
+def request_handler(conn, mon):
+	async def inner(reader, writer):
+		data = (await reader.read(128)).decode()
+		print('received', data)
+		writer.write('hello, world'.encode())
+		await writer.drain()
+		writer.close()
+	return inner
 
 def main():
 	conn = xcb.connect()
