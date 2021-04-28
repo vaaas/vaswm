@@ -8,8 +8,6 @@ from collections import deque
 import xcffib as xcb
 import xcffib.xproto as xproto
 
-# TODO: focus https://www.x.org/releases/current/doc/man/man3/xcb_set_input_focus.3.xhtml
-
 CONF = {
 	'cols': 3,
 	'tags': ['wrk', 'www', 'cmd', 'fun', 'etc'],
@@ -20,10 +18,10 @@ CONF = {
 	},
 }
 
-window_is = lambda x: lambda c: c.window == x
-workspace_is = lambda x: lambda c: c.workspace == x
 bp = CONF['borderpx']
 
+window_is = lambda x: lambda c: c.window == x
+workspace_is = lambda x: lambda c: c.workspace == x
 apply = lambda f, *args: lambda: f(*args)
 
 def find(f, xs):
@@ -45,6 +43,7 @@ class Monitor:
 		self.workspaces = [ Workspace(x) for x in CONF['tags']]
 		self.current_workspace = self.workspaces[0]
 		self.clients = deque()
+		self.current_client = None
 
 class Workspace:
 	def __init__(self, tag):
@@ -77,7 +76,6 @@ def arrange(conn, mon):
 		resize(conn, current_clients[i].window,
 			i*(cw-bp*2) + bp*2*i, 0, cw-bp*2, mon.h - bp*2)
 		i+=1
-	conn.flush()
 
 def resize(conn, window, x, y, w, h):
 	print(x,y,w,h)
@@ -96,12 +94,11 @@ def poll(conn, mon):
 	while True:
 		e = conn.poll_for_event()
 		if e == None: break
-		print(e)
 		if isinstance(e, xproto.EnterNotifyEvent):
-			set_border_colour(conn, e.event, colour=CONF['colours']['accent'])
+			focus(conn, mon, find(window_is(e.event), mon.clients))
 			conn.flush()
 		elif isinstance(e, xproto.LeaveNotifyEvent):
-			set_border_colour(conn, e.event, colour=CONF['colours']['default'])
+			unfocus(conn, mon, find(window_is(e.event), mon.clients))
 			conn.flush()
 		elif isinstance(e, xproto.ConfigureRequestEvent):
 			configure_request(conn, mon, e)
@@ -113,8 +110,54 @@ def poll(conn, mon):
 		elif isinstance(e, xproto.UnmapNotifyEvent):
 			i = find_index(window_is(e.window), mon.clients)
 			if i == None: continue
+			if mon.current_client is mon.clients[i]:
+				focus(conn, mon, nearest_client(mon.clients, mon.clients[i]))
 			del mon.clients[i]
 			arrange(conn, mon)
+			conn.flush()
+
+def nearest_client(clients, C):
+	p = None
+	for c in clients:
+		if not c.workspace is C.workspace: continue
+		if c is C:
+			if p: break
+			else: continue
+		else: p = c
+	return p
+
+def focus_next(conn, mon):
+	i = 0
+	while i < len(mon.clients) and not mon.clients[i] is mon.current_client: i += 1
+	i += 1
+	while i < len(mon.clients) and not mon.clients[i].workspace is mon.current_client.workspace: i += 1
+	if i < len(mon.clients): focus(conn, mon, mon.clients[i])
+	else:
+		i = 0
+		while i < len(mon.clients) and not mon.clients[i].workspace is mon.current_client.workspace: i += 1
+		if i < len(mon.clients): focus(conn, mon, mon.clients[i])
+
+def focus_prev(conn, mon):
+	i = len(mon.clients) - 1
+	while i >= 0 and not mon.clients[i] is mon.current_client: i -= 1
+	i -= 1
+	while i >= 0 and not mon.clients[i].workspace is mon.current_client.workspace: i -= 1
+	if i >= 0: focus(conn, mon, mon.clients[i])
+	else:
+		i = len(mon.clients) - 1
+		while i >= 0 and not mon.clients[i].workspace is mon.current_client.workspace: i -= 1
+		if i >= 0: focus(conn, mon, mon.clients[i])
+
+def focus(conn, mon, client):
+	if not client: return
+	if mon.current_client: unfocus(conn, mon, mon.current_client)
+	set_border_colour(conn, client.window, colour=CONF['colours']['accent'])
+	mon.current_client = client
+
+def unfocus(conn, mon, client):
+	if not client: return
+	set_border_colour(conn, client.window, colour=CONF['colours']['default'])
+	if mon.current_client is client: mon.current_client = None
 
 def configure_request(conn, mon, e):
 	client = find(window_is(e.window), mon.clients)
@@ -125,25 +168,23 @@ def configure_request(conn, mon, e):
 	conn.core.ChangeWindowAttributes(e.window, xproto.CW.EventMask, [xproto.EventMask.EnterWindow | xproto.EventMask.LeaveWindow])
 	set_border_colour(conn, e.window, colour=CONF['colours']['default'])
 
-def unmap_request(conn, mon, e):
-	i = find_index(window_is(e.window), mon.clients)
-	if i != None:
-		mon.clients.pop(i)
-		arrange(conn, mon)
-
 async def server(conn, mon):
 	fd = conn.get_file_descriptor()
 	asyncio.get_running_loop().add_reader(fd, apply(poll, conn, mon))
 	server = await asyncio.start_unix_server(request_handler(conn, mon), path='/tmp/vaswm.socket')
-	print('serving on', server.sockets[0].getsockname())
 	await server.serve_forever()
 
 def request_handler(conn, mon):
 	async def inner(reader, writer):
 		data = (await reader.read(128)).decode()
-		print('received', data)
-		writer.write('hello, world'.encode())
-		await writer.drain()
+		print('received', list(data))
+		if data == 'n':
+			print('hiiiiiiiii')
+			focus_next(conn, mon)
+			conn.flush()
+		if data == 'p':
+			focus_prev(conn, mon)
+			conn.flush()
 		writer.close()
 	return inner
 
