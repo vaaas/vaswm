@@ -1,8 +1,12 @@
 #/usr/bin/env python3
-import xcffib as xcb
-import xcffib.xproto as xproto
+import sys
+import asyncio
+import socket
 import inspect
 from collections import deque
+
+import xcffib as xcb
+import xcffib.xproto as xproto
 
 # TODO: focus https://www.x.org/releases/current/doc/man/man3/xcb_set_input_focus.3.xhtml
 
@@ -63,13 +67,13 @@ def set_border_colour(conn, window, colour):
 
 def arrange(conn, mon):
 	current_clients = [ x for x in mon.clients if x.workspace is mon.current_workspace ]
+	if len(current_clients) == 0: return
 	cols = min(CONF['cols'], len(current_clients))
-	if cols == 0: return
-	#cw = mon.w // cols
+	cw = mon.w // cols
 	i = 0
 	while i < cols:
 		resize(conn, current_clients[i].window,
-			i*100, 0, i*100, mon.h - bp*2)
+			i*(cw-bp*2) + bp*2*i, 0, cw-bp*2, mon.h - bp*2)
 		i+=1
 	conn.flush()
 
@@ -79,17 +83,18 @@ def resize(conn, window, x, y, w, h):
 	conn.core.ConfigureWindow(window, mask, [x,y,w,h])
 
 def setup(conn):
-	mask = xproto.EventMask.SubstructureRedirect
+	mask = xproto.EventMask.SubstructureRedirect|xproto.EventMask.SubstructureNotify
 	setup = conn.get_setup()
 	root = setup.roots[0]
 	conn.core.ChangeWindowAttributesChecked(root.root, xproto.CW.EventMask, [mask])
 	conn.flush()
 	return root
 
-def loop(conn, mon):
+def poll(conn, mon):
 	while True:
-		e = conn.wait_for_event()
-		#print(e)
+		e = conn.poll_for_event()
+		if e == None: break
+		print(e)
 		if isinstance(e, xproto.EnterNotifyEvent):
 			set_border_colour(conn, e.event, colour=CONF['colours']['accent'])
 			conn.flush()
@@ -103,11 +108,11 @@ def loop(conn, mon):
 			conn.core.MapWindow(e.window)
 			arrange(conn, mon)
 			conn.flush()
-		#elif isinstance(e, xproto.MapNotifyEvent):
-			#conn.core.
-			#arrange(conn, mon)
-		#elif isinstance(e, xproto.UnmapNotifyEvent):
-			#unmap_request(conn, mon, e)
+		elif isinstance(e, xproto.UnmapNotifyEvent):
+			i = find_index(window_is(e.window), mon.clients)
+			if i == None: continue
+			del mon.clients[i]
+			arrange(conn, mon)
 
 def configure_request(conn, mon, e):
 	client = find(window_is(e.window), mon.clients)
@@ -124,10 +129,24 @@ def unmap_request(conn, mon, e):
 		mon.clients.pop(i)
 		arrange(conn, mon)
 
+async def server(conn, mon):
+	fd = conn.get_file_descriptor()
+	asyncio.get_running_loop().add_reader(fd, lambda: poll(conn, mon))
+	server = await asyncio.start_unix_server(lambda a,b: request_handler(a,b, conn, mon), path='/tmp/vaswm.socket')
+	print('serving on', server.sockets[0].getsockname())
+	await server.serve_forever()
+
+async def request_handler(reader, writer, conn, mon):
+	data = (await reader.read(128)).decode()
+	print('received', data)
+	writer.write('hello, world'.encode())
+	await writer.drain()
+	writer.close()
+
 def main():
 	conn = xcb.connect()
 	root = setup(conn)
 	mon = Monitor(root)
-	loop(conn, mon)
+	asyncio.run(server(conn, mon))
 
 main()
