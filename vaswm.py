@@ -73,8 +73,14 @@ def arrange(conn, mon):
 	if len(current_clients) == 0: return
 	cols = min(CONF['cols'], len(current_clients))
 	cw = mon.w // cols
-	for (i, c) in enumerate(current_clients):
-		resize(conn, c, i*(cw-bp*2) + bp*2*i, 0, cw-bp*2, mon.h - bp*2)
+	if len(current_clients) <= CONF['cols']:
+		for (i, c) in enumerate(current_clients):
+			resize(conn, c, i*(cw-bp*2) + bp*2*i, 0, cw-bp*2, mon.h - bp*2)
+	else:
+		for (i, c) in enumerate(current_clients):
+			if (i - skip) >= len(current_clients): break
+			elif i < skip: continue
+			else: resize(conn, c, (i-skip)*(cw-bp*2) + bp*2*(i-skip), 0, cw-bp*2, mon.h - bp*2)
 
 def resize(conn, client, x, y, w, h):
 	mask = xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height
@@ -95,9 +101,6 @@ def poll(conn, mon):
 			if e == None: break
 			if isinstance(e, xproto.EnterNotifyEvent):
 				focus(conn, mon, find(window_is(e.event), mon))
-				conn.flush()
-			elif isinstance(e, xproto.LeaveNotifyEvent):
-				unfocus(conn, mon, find(window_is(e.event), mon))
 				conn.flush()
 			elif isinstance(e, xproto.ConfigureRequestEvent):
 				configure_request(conn, mon, e)
