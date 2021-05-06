@@ -3,7 +3,6 @@ import sys
 import asyncio
 import traceback
 from collections import deque
-
 import xcffib as xcb
 import xcffib.xproto as xproto
 
@@ -22,18 +21,25 @@ bp = CONF['borderpx']
 apply = lambda f, *args: lambda: f(*args)
 
 class Monitor:
-	def __init__(self, conn, root):
+	def __init__(self):
+		self.conn = xcb.connect()
+		mask = xproto.EventMask.SubstructureRedirect|xproto.EventMask.SubstructureNotify
+		root = self.conn.get_setup().roots[0]
+		self.conn.core.ChangeWindowAttributesChecked(root.root, xproto.CW.EventMask, [mask])
+		self.conn.flush()
+
 		self.w = root.width_in_pixels
 		self.h = root.height_in_pixels
 		self.clients = deque()
-		self.workspaces = [Workspace(conn, self, x) for x in CONF['tags']]
+		self.workspaces = [Workspace(self, x) for x in CONF['tags']]
 		self.current_workspace = self.workspaces[0]
 
 	def add_client(self, c):
 		if c.workspace.current_client == None:
 			self.clients.append(c)
+			c.focus()
 		else:
-			self.clients.insert(c.workspace.index(c) + 1, c)
+			self.clients.insert(self.clients.index(c.workspace.current_client) + 1, c)
 		c.workspace.update_clients()
 		c.workspace.update_range()
 		if self.current_workspace is c.workspace:
@@ -62,7 +68,7 @@ class Monitor:
 		self.current_workspace.arrange()
 
 class Workspace:
-	def __init__(self, conn, mon, tag):
+	def __init__(self, mon, tag):
 		self.current_client = None
 		self.monitor = mon
 		self.tag = tag
@@ -95,9 +101,10 @@ class Workspace:
 				c.resize(i*(cw-bp*2) + bp*2*i, 0, cw-bp*2, self.monitor.h - bp*2)
 		else:
 			for (i, c) in enumerate(self.clients):
+				print('>>>>>', i, i in self.range)
 				if i in self.range:
 					c.map()
-					c.resize((i-rng.start)*(cw-bp*2) + bp*2*(i-rng.start), 0, cw-bp*2, self.monitor.h - bp*2)
+					c.resize((i-self.range.start)*(cw-bp*2) + bp*2*(i-self.range.start), 0, cw-bp*2, self.monitor.h - bp*2)
 				else:
 					c.unmap()
 
@@ -118,9 +125,12 @@ class Workspace:
 			i = i + 1 if i + 1 < len(cs) else 0
 		cs[i].focus()
 
+	def focus(self, client):
+		pass
+
 class Client:
-	def __init__(self, conn, mon, e):
-		self.conn = conn
+	def __init__(self, mon, e):
+		self.conn = mon.conn
 		self.mon = mon
 		self.window = e.window
 		self.workspace = mon.current_workspace
@@ -146,79 +156,78 @@ class Client:
 	def set_border_colour(self, colour):
 		self.conn.core.ChangeWindowAttributes(self.window, xproto.CW.BorderPixel, [colour])
 
+	def accent_border(self):
+		self.set_border_colour(CONF['colours']['accent'])
+
+	def default_border(self):
+		self.set_border_colour(CONF['colours']['default'])
+
 	def set_input_focus(self):
-		self.conn.core.SetInputFocus(xproto.InputFocus.PointerRoot, self.window, xproto.Time.CurrentTime)
+		pass
+		# TODO
+		#self.conn.core.SetInputFocus(xproto.InputFocus.PointerRoot, self.window, xproto.Time.CurrentTime)
 
 	def focus(self):
 		if self.workspace.current_client is self: return
 		elif not self.workspace is self.mon.current_workspace: return
 		elif self.workspace.current_client == None:
-			self.set_border_colour(CONF['colours']['accent'])
+			self.accent_border()
 			self.workspace.current_client = self
 			self.set_input_focus()
 		else:
 			i = self.workspace.clients.index(self)
-			rng = self.workspace.range
+			flag = not i in self.workspace.range
 			self.workspace.current_client.unfocus()
-			self.set_border_colour(CONF['colours']['accent'])
-			self.workspace.current_client = client
+			self.accent_border()
+			self.workspace.current_client = self
 			self.set_input_focus()
-			if not i in rng:
+			if flag:
+				self.workspace.update_range()
 				self.workspace.arrange()
 
-	def unfocus():
-		self.set_border_colour(CONF['colours']['default'])
+	def unfocus(self):
+		self.default_border()
 		if self.workspace.current_client is self:
 			self.workspace.current_client = None
 
-def setup(conn):
-	mask = xproto.EventMask.SubstructureRedirect|xproto.EventMask.SubstructureNotify
-	setup = conn.get_setup()
-	root = setup.roots[0]
-	conn.core.ChangeWindowAttributesChecked(root.root, xproto.CW.EventMask, [mask])
-	return root
-
-def poll(conn, mon):
+def poll(mon):
 	try:
 		while True:
-			e = conn.poll_for_event()
+			e = mon.conn.poll_for_event()
 			if e == None: break
 			if isinstance(e, xproto.EnterNotifyEvent):
 				for c in mon.clients:
-					if c.window is e.event:
+					if c.window == e.event:
 						c.focus()
-						conn.flush()
 						break
-			elif isinstance(e, xproto.ConfigureRequestEvent):
-				configure_request(conn, e)
-				conn.flush()
+			if isinstance(e, xproto.ConfigureRequestEvent):
+				configure_request(mon, e)
 			elif isinstance(e, xproto.MapRequestEvent):
-				map_request(conn, mon, e)
-				conn.flush()
+				map_request(mon, e)
 			elif isinstance(e, xproto.DestroyNotifyEvent):
-				destroy_notify(conn, mon, e)
-				conn.flush()
+				destroy_notify(mon, e)
+			mon.conn.flush()
 	except:
 		traceback.print_exc()
 		sys.exit(1)
 
-def configure_request(conn, e):
-	conn.core.ConfigureWindow(e.window, xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height | xproto.ConfigWindow.BorderWidth, [e.x, e.y, e.width, e.height, bp])
-	conn.core.ChangeWindowAttributes(e.window, xproto.CW.EventMask, [xproto.EventMask.EnterWindow | xproto.EventMask.LeaveWindow])
+def configure_request(mon, e):
+	mon.conn.core.ConfigureWindow(e.window, xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height | xproto.ConfigWindow.BorderWidth, [e.x, e.y, e.width, e.height, bp])
+	mon.conn.core.ChangeWindowAttributes(e.window, xproto.CW.EventMask, [xproto.EventMask.EnterWindow | xproto.EventMask.LeaveWindow])
 
-def map_request(conn, mon, e):
+def map_request(mon, e):
 	c = None
 	for x in mon.clients:
 		if x.window is e.window:
 			c = x
 			break
 	if c == None:
-		c = Client(conn, mon, e)
+		c = Client(mon, e)
 		mon.add_client(c)
 	c.map()
-	c.set_border_colour(CONF['colours']['default'])
+	c.default_border()
 
-def destroy_notify(conn, mon, e):
+def destroy_notify(mon, e):
 	c = None
 	for x in mon.clients:
 		if x.window is e.window:
@@ -227,13 +236,7 @@ def destroy_notify(conn, mon, e):
 	if c == None: return
 	mon.delete_client(c)
 
-async def server(conn, mon):
-	fd = conn.get_file_descriptor()
-	asyncio.get_running_loop().add_reader(fd, apply(poll, conn, mon))
-	server = await asyncio.start_unix_server(request_handler(conn, mon), path='/tmp/vaswm.socket')
-	await server.serve_forever()
-
-def request_handler(conn, mon):
+def request_handler(mon):
 	async def inner(reader, writer):
 		data = (await reader.read(2)).decode()
 		if data == 'n':
@@ -246,13 +249,15 @@ def request_handler(conn, mon):
 			mon.next_workspace(True)
 		elif data == 'q':
 			mon.current_workspace.destroy_current_window()
+		mon.conn.flush()
 		writer.close()
 	return inner
 
-def main():
-	conn = xcb.connect()
-	root = setup(conn)
-	mon = Monitor(conn, root)
-	asyncio.run(server(conn, mon))
+async def main():
+	mon = Monitor()
+	fd = mon.conn.get_file_descriptor()
+	asyncio.get_running_loop().add_reader(fd, apply(poll, mon))
+	server = await asyncio.start_unix_server(request_handler(mon), path='/tmp/vaswm.socket')
+	await server.serve_forever()
 
-main()
+asyncio.run(main())
