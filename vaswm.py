@@ -57,6 +57,13 @@ class Workspace:
 	def __iter__(self):
 		return (x for x in self.monitor if x.workspace is self).__iter__()
 
+	def range(self):
+		i = list(self).index(self.current_client)
+		if i < self.cols:
+			return range(0, self.cols)
+		else:
+			return range(i + 1 - self.cols, i + 1)
+
 class Client:
 	def __init__(self, e, workspace):
 		self.workspace = workspace
@@ -76,17 +83,11 @@ def arrange(conn, mon):
 			map_window(conn, c)
 			resize(conn, c, i*(cw-bp*2) + bp*2*i, 0, cw-bp*2, mon.h - bp*2)
 	else:
-		cur = current_clients.index(mon.current_workspace.current_client)
-		if cur < cols:
-			start = 0
-			end = cols
-		else:
-			start = cur + 1 - cols
-			end = cur + 1
+		rng = mon.current_workspace.range()
 		for (i, c) in enumerate(current_clients):
-			if i >= start and i < end:
+			if i in rng:
 				map_window(conn, c)
-				resize(conn, c, (i-start)*(cw-bp*2) + bp*2*(i-start), 0, cw-bp*2, mon.h - bp*2)
+				resize(conn, c, (i-rng.start)*(cw-bp*2) + bp*2*(i-rng.start), 0, cw-bp*2, mon.h - bp*2)
 			else:
 				unmap_window(conn, c)
 
@@ -107,7 +108,6 @@ def poll(conn, mon):
 		while True:
 			e = conn.poll_for_event()
 			if e == None: break
-			print(e)
 			if isinstance(e, xproto.EnterNotifyEvent):
 				focus(conn, mon, find(window_is(e.event), mon))
 				conn.flush()
@@ -116,13 +116,10 @@ def poll(conn, mon):
 				conn.flush()
 			elif isinstance(e, xproto.MapRequestEvent):
 				map_request(conn, mon, e)
-				arrange(conn, mon)
 				conn.flush()
 			elif isinstance(e, xproto.DestroyNotifyEvent):
 				destroy_notify(conn, mon, e)
 				conn.flush()
-	except xproto.WindowError as e:
-		print('BAD')
 	except:
 		traceback.print_exc()
 		sys.exit(1)
@@ -138,13 +135,16 @@ def nearest_client(c):
 
 def focus_next(conn, mon, reverse=False):
 	cs = list(mon.current_workspace)
-	if reverse: cs.reverse()
 	if len(cs) < 1: return
-	i = 0
-	while i < len(cs) and not cs[i].workspace.current_client is cs[i]: i += 1
-	i += 1
-	if i < len(cs): focus(conn, mon, cs[i])
-	else: focus(conn, mon, cs[0])
+	if reverse: cs.reverse()
+	if len(cs) == 1:
+		i = 0
+	elif mon.current_workspace.current_client == None:
+		i = 0
+	else:
+		i = cs.index(mon.current_workspace.current_client)
+		i = i + 1 if i + 1 < len(cs) else 0
+	focus(conn, mon, cs[i])
 
 def next_workspace(conn, mon, reverse=False):
 	i = mon.workspaces.index(mon.current_workspace)
@@ -167,12 +167,12 @@ def focus(conn, mon, client):
 	else:
 		cs = list(client.workspace)
 		me = cs.index(client)
-		cur = cs.index(client.workspace.current_client)
+		rng = client.workspace.range()
 		unfocus(conn, mon, client.workspace.current_client)
 		set_border_colour(conn, client, colour=CONF['colours']['accent'])
 		client.workspace.current_client = client
 		conn.core.SetInputFocus(xproto.InputFocus.PointerRoot, client.window, xproto.Time.CurrentTime)
-		if me < cur or me >= cur + client.workspace.cols:
+		if not me in rng:
 			arrange(conn, mon)
 
 def unfocus(conn, mon, client):
@@ -196,6 +196,7 @@ def map_request(conn, mon, e):
 				client)
 	map_window(conn, client)
 	set_border_colour(conn, client, colour=CONF['colours']['default'])
+	arrange(conn, mon)
 
 def map_window(conn, client):
 	if client.visible: return
@@ -204,7 +205,7 @@ def map_window(conn, client):
 
 def unmap_window(conn, client):
 	if not client.visible: return
-	conn.core.UnmapWindow(client.window)
+	conn.core.UnmapWindowUnchecked(client.window)
 	client.visible = False
 
 def destroy_notify(conn, mon, e):
@@ -218,6 +219,10 @@ def destroy_notify(conn, mon, e):
 		except StopIteration: return
 	if c.workspace is mon.current_workspace:
 		arrange(conn, mon)
+
+def destroy_current_window(conn, mon):
+	if not mon.current_workspace.current_client: return
+	else: conn.core.DestroyWindow(mon.current_workspace.current_client.window)
 
 async def server(conn, mon):
 	fd = conn.get_file_descriptor()
@@ -239,6 +244,9 @@ def request_handler(conn, mon):
 			conn.flush()
 		elif data == 'P':
 			next_workspace(conn, mon, True)
+			conn.flush()
+		elif data == 'q':
+			destroy_current_window(conn, mon)
 			conn.flush()
 		writer.close()
 	return inner
