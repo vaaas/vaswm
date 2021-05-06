@@ -3,6 +3,7 @@ import sys
 import asyncio
 import socket
 import inspect
+import traceback
 from collections import deque
 
 import xcffib as xcb
@@ -73,6 +74,7 @@ def arrange(conn, mon):
 	if len(current_clients) == 0: return
 	cols = min(CONF['cols'], len(current_clients))
 	cw = mon.w // cols
+	skip = mon.current_workspace.skip
 	if len(current_clients) <= CONF['cols']:
 		for (i, c) in enumerate(current_clients):
 			resize(conn, c, i*(cw-bp*2) + bp*2*i, 0, cw-bp*2, mon.h - bp*2)
@@ -110,19 +112,12 @@ def poll(conn, mon):
 				arrange(conn, mon)
 				conn.flush()
 			elif isinstance(e, xproto.UnmapNotifyEvent):
-				i = find_index(window_is(e.window), mon.clients)
-				if i == None: continue
-				c = mon.clients[i]
-				del mon.clients[i]
-				if c.workspace.current_client is c:
-					c.workspace.current_client = None
-					focus(conn, mon, c.workspace.__iter__().__next__())
-				if c.workspace is mon.current_workspace:
-					arrange(conn, mon)
+				unmap_notify(conn, mon, e)
 				conn.flush()
 	except xproto.WindowError as e:
 		print('BAD')
 	except:
+		traceback.print_exc()
 		sys.exit(1)
 
 def nearest_client(c):
@@ -144,10 +139,23 @@ def focus_next(conn, mon, reverse=False):
 	if i < len(cs): focus(conn, mon, cs[i])
 	else: focus(conn, mon, cs[0])
 
+def next_workspace(conn, mon, reverse=False):
+	i = mon.workspaces.index(mon.current_workspace)
+	if reverse:
+		i = i-1 if i>0 else len(mon.workspaces)-1
+	else:
+		i = i+1 if (i+1)<len(mon.workspaces) else 0
+	mon.current_workspace = mon.workspaces[i]
+
 def focus(conn, mon, client):
 	if not client: return
 	if not client.workspace.current_client is client and not client.workspace.current_client is None:
 		unfocus(conn, mon, client.workspace.current_client)
+	i = list(client.workspace).index(client)
+	if i > client.workspace.skip + client.workspace.cols:
+		client.workspace.skip = i - client.workspace.cols
+	elif i < client.workspace.skip:
+		client.workspace.skip = i - 1
 	set_border_colour(conn, client, colour=CONF['colours']['accent'])
 	client.workspace.current_client = client
 
@@ -160,10 +168,31 @@ def configure_request(conn, mon, e):
 	client = find(window_is(e.window), mon.clients)
 	if client == None:
 		client = Client(e, mon.current_workspace)
-		mon.clients.append(client)
+		if mon.current_workspace.current_client == None:
+			mon.clients.append(client)
+		else:
+			mon.clients.insert(
+				1 + mon.clients.index(mon.current_workspace.current_client),
+				client)
 	conn.core.ConfigureWindow(e.window, xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height | xproto.ConfigWindow.BorderWidth, [e.x, e.y, e.width, e.height, bp])
 	conn.core.ChangeWindowAttributes(e.window, xproto.CW.EventMask, [xproto.EventMask.EnterWindow | xproto.EventMask.LeaveWindow])
 	set_border_colour(conn, client, colour=CONF['colours']['default'])
+
+def unmap_notify(conn, mon, e):
+	i = find_index(window_is(e.window), mon.clients)
+	if i == None: return
+	c = mon.clients[i]
+	del mon.clients[i]
+	if c.workspace.current_client is c:
+		c.workspace.current_client = None
+		try: focus(conn, mon, c.workspace.__iter__().__next__())
+		except StopIteration: return
+	LEN = len(list(c.workspace))
+	if c.workspace.skip + c.workspace.cols > LEN:
+		c.workspace.skip = LEN - c.workspace.cols
+		if c.workspace.skip < 0: c.workspace.skip = 0
+	if c.workspace is mon.current_workspace:
+		arrange(conn, mon)
 
 async def server(conn, mon):
 	fd = conn.get_file_descriptor()
@@ -173,12 +202,18 @@ async def server(conn, mon):
 
 def request_handler(conn, mon):
 	async def inner(reader, writer):
-		data = (await reader.read(128)).decode()
+		data = (await reader.read(2)).decode()
 		if data == 'n':
 			focus_next(conn, mon)
 			conn.flush()
-		if data == 'p':
+		elif data == 'p':
 			focus_next(conn, mon, True)
+			conn.flush()
+		elif data == 'N':
+			next_workspace(conn, mon)
+			conn.flush()
+		elif data == 'P':
+			next_workspace(conn, mon, True)
 			conn.flush()
 		writer.close()
 	return inner
