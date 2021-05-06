@@ -5,6 +5,7 @@ import socket
 import inspect
 import traceback
 from collections import deque
+from pprint import pprint
 
 import xcffib as xcb
 import xcffib.xproto as xproto
@@ -51,7 +52,6 @@ class Workspace:
 		self.current_client = None
 		self.monitor = monitor
 		self.tag = tag
-		self.skip = 0
 		self.cols = CONF['cols']
 
 	def __iter__(self):
@@ -61,10 +61,7 @@ class Client:
 	def __init__(self, e, workspace):
 		self.workspace = workspace
 		self.window = e.window
-		self.x = e.x
-		self.y = e.y
-		self.w = e.width
-		self.h = e.height
+		self.visible = False
 
 def set_border_colour(conn, client, colour):
 	conn.core.ChangeWindowAttributes(client.window, xproto.CW.BorderPixel, [colour])
@@ -72,17 +69,26 @@ def set_border_colour(conn, client, colour):
 def arrange(conn, mon):
 	current_clients = list(mon.current_workspace)
 	if len(current_clients) == 0: return
-	cols = min(CONF['cols'], len(current_clients))
+	cols = min(mon.current_workspace.cols, len(current_clients))
 	cw = mon.w // cols
-	skip = mon.current_workspace.skip
-	if len(current_clients) <= CONF['cols']:
+	if len(current_clients) <= cols:
 		for (i, c) in enumerate(current_clients):
+			map_window(conn, c)
 			resize(conn, c, i*(cw-bp*2) + bp*2*i, 0, cw-bp*2, mon.h - bp*2)
 	else:
+		cur = current_clients.index(mon.current_workspace.current_client)
+		if cur < cols:
+			start = 0
+			end = cols
+		else:
+			start = cur + 1 - cols
+			end = cur + 1
 		for (i, c) in enumerate(current_clients):
-			if (i - skip) >= len(current_clients): break
-			elif i < skip: continue
-			else: resize(conn, c, (i-skip)*(cw-bp*2) + bp*2*(i-skip), 0, cw-bp*2, mon.h - bp*2)
+			if i >= start and i < end:
+				map_window(conn, c)
+				resize(conn, c, (i-start)*(cw-bp*2) + bp*2*(i-start), 0, cw-bp*2, mon.h - bp*2)
+			else:
+				unmap_window(conn, c)
 
 def resize(conn, client, x, y, w, h):
 	mask = xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height
@@ -101,6 +107,7 @@ def poll(conn, mon):
 		while True:
 			e = conn.poll_for_event()
 			if e == None: break
+			print(e)
 			if isinstance(e, xproto.EnterNotifyEvent):
 				focus(conn, mon, find(window_is(e.event), mon))
 				conn.flush()
@@ -108,11 +115,11 @@ def poll(conn, mon):
 				configure_request(conn, mon, e)
 				conn.flush()
 			elif isinstance(e, xproto.MapRequestEvent):
-				conn.core.MapWindow(e.window)
+				map_request(conn, mon, e)
 				arrange(conn, mon)
 				conn.flush()
-			elif isinstance(e, xproto.UnmapNotifyEvent):
-				unmap_notify(conn, mon, e)
+			elif isinstance(e, xproto.DestroyNotifyEvent):
+				destroy_notify(conn, mon, e)
 				conn.flush()
 	except xproto.WindowError as e:
 		print('BAD')
@@ -145,19 +152,28 @@ def next_workspace(conn, mon, reverse=False):
 		i = i-1 if i>0 else len(mon.workspaces)-1
 	else:
 		i = i+1 if (i+1)<len(mon.workspaces) else 0
+	for c in mon.current_workspace: unmap_window(conn, c)
 	mon.current_workspace = mon.workspaces[i]
+	arrange(conn, mon)
 
 def focus(conn, mon, client):
 	if not client: return
-	if not client.workspace.current_client is client and not client.workspace.current_client is None:
+	elif client.workspace.current_client is client: return
+	elif not client.workspace is mon.current_workspace: return
+	elif client.workspace.current_client == None:
+		set_border_colour(conn, client, colour=CONF['colours']['accent'])
+		client.workspace.current_client = client
+		return
+	else:
+		cs = list(client.workspace)
+		me = cs.index(client)
+		cur = cs.index(client.workspace.current_client)
 		unfocus(conn, mon, client.workspace.current_client)
-	i = list(client.workspace).index(client)
-	if i > client.workspace.skip + client.workspace.cols:
-		client.workspace.skip = i - client.workspace.cols
-	elif i < client.workspace.skip:
-		client.workspace.skip = i - 1
-	set_border_colour(conn, client, colour=CONF['colours']['accent'])
-	client.workspace.current_client = client
+		set_border_colour(conn, client, colour=CONF['colours']['accent'])
+		client.workspace.current_client = client
+		conn.core.SetInputFocus(xproto.InputFocus.PointerRoot, client.window, xproto.Time.CurrentTime)
+		if me < cur or me >= cur + client.workspace.cols:
+			arrange(conn, mon)
 
 def unfocus(conn, mon, client):
 	if not client: return
@@ -165,6 +181,10 @@ def unfocus(conn, mon, client):
 	if client.workspace.current_client is client: client.workspace.current_client = None
 
 def configure_request(conn, mon, e):
+	conn.core.ConfigureWindow(e.window, xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height | xproto.ConfigWindow.BorderWidth, [e.x, e.y, e.width, e.height, bp])
+	conn.core.ChangeWindowAttributes(e.window, xproto.CW.EventMask, [xproto.EventMask.EnterWindow | xproto.EventMask.LeaveWindow])
+
+def map_request(conn, mon, e):
 	client = find(window_is(e.window), mon.clients)
 	if client == None:
 		client = Client(e, mon.current_workspace)
@@ -174,11 +194,20 @@ def configure_request(conn, mon, e):
 			mon.clients.insert(
 				1 + mon.clients.index(mon.current_workspace.current_client),
 				client)
-	conn.core.ConfigureWindow(e.window, xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height | xproto.ConfigWindow.BorderWidth, [e.x, e.y, e.width, e.height, bp])
-	conn.core.ChangeWindowAttributes(e.window, xproto.CW.EventMask, [xproto.EventMask.EnterWindow | xproto.EventMask.LeaveWindow])
+	map_window(conn, client)
 	set_border_colour(conn, client, colour=CONF['colours']['default'])
 
-def unmap_notify(conn, mon, e):
+def map_window(conn, client):
+	if client.visible: return
+	conn.core.MapWindow(client.window)
+	client.visible = True
+
+def unmap_window(conn, client):
+	if not client.visible: return
+	conn.core.UnmapWindow(client.window)
+	client.visible = False
+
+def destroy_notify(conn, mon, e):
 	i = find_index(window_is(e.window), mon.clients)
 	if i == None: return
 	c = mon.clients[i]
@@ -187,10 +216,6 @@ def unmap_notify(conn, mon, e):
 		c.workspace.current_client = None
 		try: focus(conn, mon, c.workspace.__iter__().__next__())
 		except StopIteration: return
-	LEN = len(list(c.workspace))
-	if c.workspace.skip + c.workspace.cols > LEN:
-		c.workspace.skip = LEN - c.workspace.cols
-		if c.workspace.skip < 0: c.workspace.skip = 0
 	if c.workspace is mon.current_workspace:
 		arrange(conn, mon)
 
