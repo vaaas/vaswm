@@ -38,62 +38,147 @@ def find_index(f, xs):
 	return None
 
 class Monitor:
-	def __init__(self, root):
+	def __init__(self, conn, root):
 		self.w = root.width_in_pixels
 		self.h = root.height_in_pixels
-		self.workspaces = [Workspace(x, self) for x in CONF['tags']]
+		self.workspaces = [Workspace(conn, self, x) for x in CONF['tags']]
 		self.current_workspace = self.workspaces[0]
 		self.clients = deque()
 
-	def __iter__(self): return self.clients.__iter__()
+	def add_client(self, c, i=-1):
+		if c.workspace.current_client == None:
+			self.clients.append(c)
+		else:
+			self.clients.insert(c.workspace.index(c) + 1, c)
+		c.workspace.update_clients()
+		if self.current_workspace is c.workspace:
+			self.current_workspace.arrange()
+
+	def next_workspace(self, reverse=False):
+		i = self.workspaces.index(self.current_workspace)
+		if reverse:
+			i = i-1 if i>0 else len(self.workspaces)-1
+		else:
+			i = i+1 if (i+1)<len(self.workspaces) else 0
+		for c in self.current_workspace.clients:
+			c.unmap()
+		self.current_workspace = self.workspaces[i]
+		self.current_workspace.arrange()
 
 class Workspace:
-	def __init__(self, tag, monitor):
+	def __init__(self, conn, mon, tag):
 		self.current_client = None
 		self.monitor = monitor
 		self.tag = tag
 		self.cols = CONF['cols']
+		self.clients = []
+		self.range = range(0, 0)
+		self.update_clients()
+		self.update_range()
 
-	def __iter__(self):
-		return (x for x in self.monitor if x.workspace is self).__iter__()
+	def update_clients(self):
+		self.clients = [x for x in self.monitor if x.workspace is self]
 
-	def range(self):
-		i = list(self).index(self.current_client)
+	def update_range(self):
+		i = self.clients.index(self.current_client)
 		if i < self.cols:
-			return range(0, self.cols)
+			self.range = range(0, self.cols)
 		else:
-			return range(i + 1 - self.cols, i + 1)
+			self.range = range(i + 1 - self.cols, i + 1)
+
+	def arrange():
+		if len(self.clients) == 0: return
+		cols = min(self.cols, len(self.clients))
+		cw = mon.w // cols
+		if len(self.clients) <= cols:
+			for (i, c) in enumerate(self.clients):
+				c.map()
+				c.resize(i*(cw-bp*2) + bp*2*i, 0, cw-bp*2, mon.h - bp*2)
+		else:
+			for (i, c) in enumerate(self.clients):
+				if i in self.range:
+					c.map()
+					c.resize(i-rng.start)*(cw-bp*2) + bp*2*(i-rng.start), 0, cw-bp*2, mon.h - bp*2)
+				else:
+					c.unmap()
+		self.conn.flush()
+
+	def destroy_current_window(self):
+		if not self.current_client: return
+		else: self.current_client.destroy()
+
+	def focus_next(self, reverse=False):
+		cs = list(self.clients)
+		if len(cs) < 1: return
+		if reverse: cs.reverse()
+		if len(cs) == 1:
+			i = 0
+		elif self.current_client == None:
+			i = 0
+		else:
+			i = cs.index(self.current_client)
+			i = i + 1 if i + 1 < len(cs) else 0
+		cs[i].focus()
 
 class Client:
-	def __init__(self, e, workspace):
-		self.workspace = workspace
+	def __init__(self, conn, mon, e):
+		self.conn = conn
+		self.mon = mon
 		self.window = e.window
+		self.workspace = mon.current_workspace
 		self.visible = False
 
-def set_border_colour(conn, client, colour):
-	conn.core.ChangeWindowAttributes(client.window, xproto.CW.BorderPixel, [colour])
+	def destroy(self):
+		self.conn.core.DestroyWindow(self.window)
+		self.conn.flush()
 
-def arrange(conn, mon):
-	current_clients = list(mon.current_workspace)
-	if len(current_clients) == 0: return
-	cols = min(mon.current_workspace.cols, len(current_clients))
-	cw = mon.w // cols
-	if len(current_clients) <= cols:
-		for (i, c) in enumerate(current_clients):
-			map_window(conn, c)
-			resize(conn, c, i*(cw-bp*2) + bp*2*i, 0, cw-bp*2, mon.h - bp*2)
-	else:
-		rng = mon.current_workspace.range()
-		for (i, c) in enumerate(current_clients):
-			if i in rng:
-				map_window(conn, c)
-				resize(conn, c, (i-rng.start)*(cw-bp*2) + bp*2*(i-rng.start), 0, cw-bp*2, mon.h - bp*2)
-			else:
-				unmap_window(conn, c)
+	def map(self):
+		if self.visible: return
+		self.conn.core.MapWindow(self.window)
+		self.visible = True
+		self.conn.flush()
 
-def resize(conn, client, x, y, w, h):
-	mask = xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height
-	conn.core.ConfigureWindow(client.window, mask, [x,y,w,h])
+	def unmap(self):
+		if not self.visible: return
+		self.conn.core.UnmapWindowUnchecked(self.window)
+		self.client.visible = False
+		self.conn.flush()
+
+	def resize(self, x, y, w, h):
+		mask = xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height
+		self.conn.core.ConfigureWindow(self.window, mask, [x,y,w,h])
+		self.conn.flush()
+
+	def set_border_colour(self, colour)
+		self.conn.core.ChangeWindowAttributes(self.window, xproto.CW.BorderPixel, [colour])
+		self.conn.flush()
+
+	def set_input_focus(self):
+		self.conn.core.SetInputFocus(xproto.InputFocus.PointerRoot, self.window, xproto.Time.CurrentTime)
+		self.conn.flush()
+
+	def focus(self):
+		if self.workspace.current_client is self: return
+		elif not self.workspace is self.mon.current_workspace: return
+		elif self.workspace.current_client == None:
+			self.set_border_colour(CONF['colours']['accent'])
+			self.workspace.current_client = self
+			self.set_input_focus()
+		else:
+			i = self.workspace.clients.index(self)
+			rng = self.workspace.range
+			self.workspace.current_client.unfocus()
+			self.set_border_colour(CONF['colours']['accent'])
+			self.workspace.current_client = client
+			self.set_input_focus()
+			if not i in rng:
+				self.workspace.arrange()
+
+	def unfocus():
+		self.set_border_colour(CONF['colours']['default'])
+		if self.workspace.current_client is self:
+			self.workspace.current_client = None
+		self.conn.flush()
 
 def setup(conn):
 	mask = xproto.EventMask.SubstructureRedirect|xproto.EventMask.SubstructureNotify
@@ -109,7 +194,9 @@ def poll(conn, mon):
 			e = conn.poll_for_event()
 			if e == None: break
 			if isinstance(e, xproto.EnterNotifyEvent):
-				focus(conn, mon, find(window_is(e.event), mon))
+				for c in mon.clients:
+					if c.window is e.event:
+						c.focus()
 				conn.flush()
 			elif isinstance(e, xproto.ConfigureRequestEvent):
 				configure_request(conn, mon, e)
@@ -124,62 +211,6 @@ def poll(conn, mon):
 		traceback.print_exc()
 		sys.exit(1)
 
-def nearest_client(c):
-	p = None
-	for x in c.workspace:
-		if x is c:
-			if p: return p
-			else: continue
-		else: p = x
-	return p
-
-def focus_next(conn, mon, reverse=False):
-	cs = list(mon.current_workspace)
-	if len(cs) < 1: return
-	if reverse: cs.reverse()
-	if len(cs) == 1:
-		i = 0
-	elif mon.current_workspace.current_client == None:
-		i = 0
-	else:
-		i = cs.index(mon.current_workspace.current_client)
-		i = i + 1 if i + 1 < len(cs) else 0
-	focus(conn, mon, cs[i])
-
-def next_workspace(conn, mon, reverse=False):
-	i = mon.workspaces.index(mon.current_workspace)
-	if reverse:
-		i = i-1 if i>0 else len(mon.workspaces)-1
-	else:
-		i = i+1 if (i+1)<len(mon.workspaces) else 0
-	for c in mon.current_workspace: unmap_window(conn, c)
-	mon.current_workspace = mon.workspaces[i]
-	arrange(conn, mon)
-
-def focus(conn, mon, client):
-	if not client: return
-	elif client.workspace.current_client is client: return
-	elif not client.workspace is mon.current_workspace: return
-	elif client.workspace.current_client == None:
-		set_border_colour(conn, client, colour=CONF['colours']['accent'])
-		client.workspace.current_client = client
-		return
-	else:
-		cs = list(client.workspace)
-		me = cs.index(client)
-		rng = client.workspace.range()
-		unfocus(conn, mon, client.workspace.current_client)
-		set_border_colour(conn, client, colour=CONF['colours']['accent'])
-		client.workspace.current_client = client
-		conn.core.SetInputFocus(xproto.InputFocus.PointerRoot, client.window, xproto.Time.CurrentTime)
-		if not me in rng:
-			arrange(conn, mon)
-
-def unfocus(conn, mon, client):
-	if not client: return
-	set_border_colour(conn, client, colour=CONF['colours']['default'])
-	if client.workspace.current_client is client: client.workspace.current_client = None
-
 def configure_request(conn, mon, e):
 	conn.core.ConfigureWindow(e.window, xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height | xproto.ConfigWindow.BorderWidth, [e.x, e.y, e.width, e.height, bp])
 	conn.core.ChangeWindowAttributes(e.window, xproto.CW.EventMask, [xproto.EventMask.EnterWindow | xproto.EventMask.LeaveWindow])
@@ -187,26 +218,9 @@ def configure_request(conn, mon, e):
 def map_request(conn, mon, e):
 	client = find(window_is(e.window), mon.clients)
 	if client == None:
-		client = Client(e, mon.current_workspace)
-		if mon.current_workspace.current_client == None:
-			mon.clients.append(client)
-		else:
-			mon.clients.insert(
-				1 + mon.clients.index(mon.current_workspace.current_client),
-				client)
+		mon.add_client(Client(conn, mon, e))
 	map_window(conn, client)
 	set_border_colour(conn, client, colour=CONF['colours']['default'])
-	arrange(conn, mon)
-
-def map_window(conn, client):
-	if client.visible: return
-	conn.core.MapWindow(client.window)
-	client.visible = True
-
-def unmap_window(conn, client):
-	if not client.visible: return
-	conn.core.UnmapWindowUnchecked(client.window)
-	client.visible = False
 
 def destroy_notify(conn, mon, e):
 	i = find_index(window_is(e.window), mon.clients)
@@ -220,10 +234,6 @@ def destroy_notify(conn, mon, e):
 	if c.workspace is mon.current_workspace:
 		arrange(conn, mon)
 
-def destroy_current_window(conn, mon):
-	if not mon.current_workspace.current_client: return
-	else: conn.core.DestroyWindow(mon.current_workspace.current_client.window)
-
 async def server(conn, mon):
 	fd = conn.get_file_descriptor()
 	asyncio.get_running_loop().add_reader(fd, apply(poll, conn, mon))
@@ -234,27 +244,22 @@ def request_handler(conn, mon):
 	async def inner(reader, writer):
 		data = (await reader.read(2)).decode()
 		if data == 'n':
-			focus_next(conn, mon)
-			conn.flush()
+			mon.current_workspace.focus_next()
 		elif data == 'p':
-			focus_next(conn, mon, True)
-			conn.flush()
+			mon.current_workspace.focus_next(True)
 		elif data == 'N':
-			next_workspace(conn, mon)
-			conn.flush()
+			mon.next_workspace()
 		elif data == 'P':
-			next_workspace(conn, mon, True)
-			conn.flush()
+			mon.next_workspace(True)
 		elif data == 'q':
-			destroy_current_window(conn, mon)
-			conn.flush()
+			mon.current_workspace.destroy_current_window()
 		writer.close()
 	return inner
 
 def main():
 	conn = xcb.connect()
 	root = setup(conn)
-	mon = Monitor(root)
+	mon = Monitor(conn, root)
 	asyncio.run(server(conn, mon))
 
 main()
