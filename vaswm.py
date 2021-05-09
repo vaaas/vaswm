@@ -115,11 +115,12 @@ class Workspace:
 
 	def focus_next(self, reverse=False):
 		if len(self.clients) < 2: return
-		i = self.clients.index(self.current_client) + 1
-		if i >= len(self.clients): i = 0
-		self.current_client.unfocus()
-		self.current_client = self.clients[i]
-		self.current_client.accent_border()
+		if reverse:
+			i = self.clients.index(self.current_client) - 1
+		else:
+			i = self.clients.index(self.current_client) + 1
+			if i >= len(self.clients): i = 0
+		self.clients[i].focus()
 
 class Client:
 	def __init__(self, mon, e):
