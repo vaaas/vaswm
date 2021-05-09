@@ -96,13 +96,13 @@ class Workspace:
 
 	def arrange(self):
 		if not self.monitor.current_workspace is self: return
-		if len(self.clients) == 0: return
-		cols = min(self.cols, len(self.clients))
-		cw = self.monitor.w // cols
-		if len(self.clients) <= cols:
+		elif len(self.clients) == 0: return
+		elif len(self.clients) <= self.cols:
+			cw = self.monitor.w // len(self.clients)
 			for (i, c) in enumerate(self.clients):
 				c.resize(i*(cw-bp*2) + bp*2*i, 0, cw-bp*2, self.monitor.h - bp*2)
 		else:
+			cw = self.monitor.w // self.cols
 			for (i, c) in enumerate(self.clients):
 				if i in self.range:
 					c.resize((i-self.range.start)*(cw-bp*2) + bp*2*(i-self.range.start), 0, cw-bp*2, self.monitor.h - bp*2)
@@ -121,11 +121,12 @@ class Workspace:
 			i = self.clients.index(self.current_client) + 1
 			if i >= len(self.clients): i = 0
 		self.clients[i].focus()
+		self.clients[i].set_input_focus()
 
 class Client:
 	def __init__(self, mon, e):
 		self.conn = mon.conn
-		self.mon = mon
+		self.monitor = mon
 		self.window = e.window
 		self.workspace = mon.current_workspace
 
@@ -137,7 +138,7 @@ class Client:
 
 	def hide(self):
 		mask = xproto.ConfigWindow.X
-		self.conn.core.ConfigureWindow(self.window, mask, [-self.mon.w])
+		self.conn.core.ConfigureWindow(self.window, mask, [-self.monitor.w])
 
 	def resize(self, x, y, w, h):
 		mask = xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height
@@ -153,7 +154,8 @@ class Client:
 		self.set_border_colour(CONF['colours']['default'])
 
 	def focus(self):
-		if self.workspace.current_client is self: return
+		if self.workspace.current_client is self:
+			return
 		elif self.workspace.current_client != None:
 			self.workspace.current_client.unfocus()
 		self.workspace.current_client = self
@@ -167,16 +169,19 @@ class Client:
 		if self.workspace.current_client is self:
 			self.workspace.current_client = None
 
+	def set_input_focus(self):
+		self.conn.core.SetInputFocus(xproto.InputFocus.PointerRoot, self.window, xproto.Time.CurrentTime)
+
 def poll(mon):
 	try:
 		while True:
 			e = mon.conn.poll_for_event()
 			if e == None: break
 			if isinstance(e, xproto.EnterNotifyEvent):
-				for c in mon.clients:
-					if c.window == e.event:
-						c.focus()
-						break
+				c = mon.current_workspace.current_client
+				if e.event != c.window:
+					c.set_input_focus()
+					c.accent_border()
 			if isinstance(e, xproto.ConfigureRequestEvent):
 				configure_request(mon, e)
 			elif isinstance(e, xproto.MapRequestEvent):
@@ -190,7 +195,7 @@ def poll(mon):
 
 def configure_request(mon, e):
 	mon.conn.core.ConfigureWindow(e.window, xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height | xproto.ConfigWindow.BorderWidth, [e.x, e.y, e.width, e.height, bp])
-	mon.conn.core.ChangeWindowAttributes(e.window, xproto.CW.EventMask, [xproto.EventMask.EnterWindow | xproto.EventMask.LeaveWindow])
+	mon.conn.core.ChangeWindowAttributes(e.window, xproto.CW.EventMask, [xproto.EventMask.EnterWindow])
 
 def map_request(mon, e):
 	c = None
