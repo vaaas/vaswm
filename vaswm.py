@@ -46,13 +46,15 @@ class Monitor:
 			self.current_workspace.arrange()
 
 	def delete_client(self, c):
+		if len(c.workspace.clients) > 1 and c is c.workspace.current_client:
+			i = c.workspace.clients.index(c)
+			c.workspace.current_client = None
+			c.workspace.clients[i-1].focus()
+		else:
+			c.workspace.current_client = None
 		del self.clients[self.clients.index(c)]
 		c.workspace.update_clients()
-		if c.workspace.current_client is c:
-			c.workspace.current_client = None
-			if len(c.workspace.clients) > 0:
-				c.workspace.clients[0].focus()
-			c.workspace.update_range()
+		c.workspace.update_range()
 		if c.workspace is self.current_workspace:
 			c.workspace.arrange()
 
@@ -63,7 +65,7 @@ class Monitor:
 		else:
 			i = i+1 if (i+1)<len(self.workspaces) else 0
 		for c in self.current_workspace.clients:
-			c.unmap()
+			c.hide()
 		self.current_workspace = self.workspaces[i]
 		self.current_workspace.arrange()
 
@@ -90,7 +92,6 @@ class Workspace:
 				self.range = range(0, self.cols)
 			else:
 				self.range = range(i + 1 - self.cols, i + 1)
-			print(self.range)
 
 	def arrange(self):
 		if len(self.clients) == 0: return
@@ -98,22 +99,20 @@ class Workspace:
 		cw = self.monitor.w // cols
 		if len(self.clients) <= cols:
 			for (i, c) in enumerate(self.clients):
-				c.map()
 				c.resize(i*(cw-bp*2) + bp*2*i, 0, cw-bp*2, self.monitor.h - bp*2)
 		else:
 			for (i, c) in enumerate(self.clients):
-				print('>>>>>', i, i in self.range)
 				if i in self.range:
-					c.map()
 					c.resize((i-self.range.start)*(cw-bp*2) + bp*2*(i-self.range.start), 0, cw-bp*2, self.monitor.h - bp*2)
 				else:
-					c.unmap()
+					c.hide()
 
 	def destroy_current_window(self):
 		if not self.current_client: return
 		else: self.current_client.destroy()
 
 	def focus_next(self, reverse=False):
+		print(cs.index(self.current_client))
 		cs = list(self.clients)
 		if len(cs) < 1: return
 		if reverse: cs.reverse()
@@ -132,20 +131,16 @@ class Client:
 		self.mon = mon
 		self.window = e.window
 		self.workspace = mon.current_workspace
-		self.visible = False
 
 	def destroy(self):
 		self.conn.core.DestroyWindow(self.window)
 
 	def map(self):
-		if self.visible: return
 		self.conn.core.MapWindow(self.window)
-		self.visible = True
 
-	def unmap(self):
-		if not self.visible: return
-		self.conn.core.UnmapWindowUnchecked(self.window)
-		self.visible = False
+	def hide(self):
+		mask = xproto.ConfigWindow.X
+		self.conn.core.ConfigureWindow(self.window, mask, [-self.mon.w])
 
 	def resize(self, x, y, w, h):
 		mask = xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height
@@ -195,8 +190,8 @@ def poll(mon):
 				configure_request(mon, e)
 			elif isinstance(e, xproto.MapRequestEvent):
 				map_request(mon, e)
-			elif isinstance(e, xproto.DestroyNotifyEvent):
-				destroy_notify(mon, e)
+			elif isinstance(e, xproto.UnmapNotifyEvent):
+				unmap_notify(mon, e)
 			mon.conn.flush()
 	except:
 		traceback.print_exc()
@@ -209,7 +204,7 @@ def configure_request(mon, e):
 def map_request(mon, e):
 	c = None
 	for x in mon.clients:
-		if x.window is e.window:
+		if x.window == e.window:
 			c = x
 			break
 	if c == None:
@@ -218,14 +213,10 @@ def map_request(mon, e):
 	c.map()
 	c.default_border()
 
-def destroy_notify(mon, e):
-	c = None
+def unmap_notify(mon, e):
 	for x in mon.clients:
-		if x.window is e.window:
-			c = x
-			break
-	if c == None: return
-	mon.delete_client(c)
+		if x.window == e.window:
+			return mon.delete_client(x)
 
 def request_handler(mon):
 	async def inner(reader, writer):
