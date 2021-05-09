@@ -129,6 +129,8 @@ class Client:
 		self.monitor = mon
 		self.window = e.window
 		self.workspace = mon.current_workspace
+		self.map()
+		self.default_border()
 
 	def destroy(self):
 		self.conn.core.DestroyWindow(self.window)
@@ -159,6 +161,7 @@ class Client:
 		elif self.workspace.current_client != None:
 			self.workspace.current_client.unfocus()
 		self.workspace.current_client = self
+		self.set_input_focus()
 		self.accent_border()
 		if not self.workspace.clients.index(self) in self.workspace.range:
 			self.workspace.update_range()
@@ -178,6 +181,10 @@ def poll(mon):
 			e = mon.conn.poll_for_event()
 			if e == None: break
 			if isinstance(e, xproto.EnterNotifyEvent):
+				# there's some sort of bug with focus. fix later. ask in a mailing list
+				# for c in mon.clients:
+				# 	if c.window == c.window:
+				# 		return c.focus()
 				c = mon.current_workspace.current_client
 				if e.event != c.window:
 					c.set_input_focus()
@@ -190,6 +197,7 @@ def poll(mon):
 				unmap_notify(mon, e)
 			mon.conn.flush()
 	except:
+		# there HAS to be a cleaner way.
 		traceback.print_exc()
 		sys.exit(1)
 
@@ -206,8 +214,8 @@ def map_request(mon, e):
 	if c == None:
 		c = Client(mon, e)
 		mon.add_client(c)
-	c.map()
-	c.default_border()
+	else:
+		c.map()
 
 def unmap_notify(mon, e):
 	for x in mon.clients:
