@@ -35,28 +35,29 @@ class Monitor:
 		self.current_workspace = self.workspaces[0]
 
 	def add_client(self, c):
-		if c.workspace.current_client == None:
-			self.clients.append(c)
-			c.focus()
-		else:
+		try:
 			self.clients.insert(self.clients.index(c.workspace.current_client) + 1, c)
+		except:
+			self.clients.append(c)
 		c.workspace.update_clients()
 		c.workspace.update_range()
-		if self.current_workspace is c.workspace:
-			self.current_workspace.arrange()
+		if c.workspace.current_client == None: c.focus()
+		c.workspace.arrange()
 
 	def delete_client(self, c):
-		if len(c.workspace.clients) > 1 and c is c.workspace.current_client:
-			i = c.workspace.clients.index(c)
-			c.workspace.current_client = None
-			c.workspace.clients[i-1].focus()
-		else:
-			c.workspace.current_client = None
+		i = c.workspace.clients.index(c)
 		del self.clients[self.clients.index(c)]
+		if c.workspace.current_client is c:
+			c.workspace.current_client = None
 		c.workspace.update_clients()
 		c.workspace.update_range()
-		if c.workspace is self.current_workspace:
-			c.workspace.arrange()
+		if len(c.workspace.clients) == 0:
+			return
+		elif i == 0:
+			c.workspace.clients[0].focus()
+		else:
+			c.workspace.clients[-1].focus()
+		c.workspace.arrange()
 
 	def next_workspace(self, reverse=False):
 		i = self.workspaces.index(self.current_workspace)
@@ -94,6 +95,7 @@ class Workspace:
 				self.range = range(i + 1 - self.cols, i + 1)
 
 	def arrange(self):
+		if not self.monitor.current_workspace is self: return
 		if len(self.clients) == 0: return
 		cols = min(self.cols, len(self.clients))
 		cw = self.monitor.w // cols
@@ -112,18 +114,12 @@ class Workspace:
 		else: self.current_client.destroy()
 
 	def focus_next(self, reverse=False):
-		print(cs.index(self.current_client))
-		cs = list(self.clients)
-		if len(cs) < 1: return
-		if reverse: cs.reverse()
-		if len(cs) == 1:
-			i = 0
-		elif self.current_client == None:
-			i = 0
-		else:
-			i = cs.index(self.current_client) + 1
-			if i == len(cs): i = 0
-		cs[i].focus()
+		if len(self.clients) < 2: return
+		i = self.clients.index(self.current_client) + 1
+		if i >= len(self.clients): i = 0
+		self.current_client.unfocus()
+		self.current_client = self.clients[i]
+		self.current_client.accent_border()
 
 class Client:
 	def __init__(self, mon, e):
@@ -157,19 +153,13 @@ class Client:
 
 	def focus(self):
 		if self.workspace.current_client is self: return
-		elif not self.workspace is self.mon.current_workspace: return
-		elif self.workspace.current_client == None:
-			self.accent_border()
-			self.workspace.current_client = self
-		else:
-			i = self.workspace.clients.index(self)
-			flag = not i in self.workspace.range
+		elif self.workspace.current_client != None:
 			self.workspace.current_client.unfocus()
-			self.accent_border()
-			self.workspace.current_client = self
-			if flag:
-				self.workspace.update_range()
-				self.workspace.arrange()
+		self.workspace.current_client = self
+		self.accent_border()
+		if not self.workspace.clients.index(self) in self.workspace.range:
+			self.workspace.update_range()
+			self.workspace.arrange()
 
 	def unfocus(self):
 		self.default_border()
