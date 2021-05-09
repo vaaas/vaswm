@@ -7,7 +7,7 @@ import xcffib as xcb
 import xcffib.xproto as xproto
 
 CONF = {
-	'cols': 2,
+	'cols': 4,
 	'tags': ['wrk', 'www', 'cmd', 'fun', 'etc'],
 	'borderpx': 4,
 	'colours': {
@@ -18,8 +18,6 @@ CONF = {
 
 bp = CONF['borderpx']
 
-apply = lambda f, *args: lambda: f(*args)
-
 class Monitor:
 	def __init__(self):
 		self.conn = xcb.connect()
@@ -28,6 +26,9 @@ class Monitor:
 		self.conn.core.ChangeWindowAttributesChecked(root.root, xproto.CW.EventMask, [mask])
 		self.conn.flush()
 
+		self.atoms = {}
+		for x in ['WM_DELETE_WINDOW', 'WM_PROTOCOLS']:
+			self.atoms[x] = self.conn.core.InternAtom(False, len(x), x).reply().atom
 		self.w = root.width_in_pixels
 		self.h = root.height_in_pixels
 		self.clients = deque()
@@ -65,10 +66,16 @@ class Monitor:
 			i = i-1 if i>0 else len(self.workspaces)-1
 		else:
 			i = i+1 if (i+1)<len(self.workspaces) else 0
+		self.set_workspace(self.workspaces[i])
+
+	def set_workspace(self, w):
+		if w is self.current_workspace: return
 		for c in self.current_workspace.clients:
 			c.hide()
-		self.current_workspace = self.workspaces[i]
-		self.current_workspace.arrange()
+		self.current_workspace = w
+		w.arrange()
+		if w.current_client:
+			w.current_client.set_input_focus()
 
 class Workspace:
 	def __init__(self, mon, tag):
@@ -111,7 +118,8 @@ class Workspace:
 
 	def destroy_current_window(self):
 		if not self.current_client: return
-		else: self.current_client.destroy()
+		else:
+			self.current_client.destroy()
 
 	def focus_next(self, reverse=False):
 		if len(self.clients) < 2: return
@@ -129,20 +137,44 @@ class Client:
 		self.monitor = mon
 		self.window = e.window
 		self.workspace = mon.current_workspace
+
+		geom = self.conn.core.GetGeometry(self.window).reply()
+		self.x = geom.x
+		self.y = geom.y
+		self.w = geom.width
+		self.h = geom.height
+
 		self.map()
 		self.default_border()
 
+	def send_event(self, data, mask=xproto.EventMask.NoEvent, format=32, type='WM_PROTOCOLS'):
+		event = xproto.ClientMessageEvent.synthetic(
+			format=32,
+			window=self.window,
+			type=self.monitor.atoms[type],
+			data=data,
+		).pack()
+		self.conn.core.SendEvent(False, self.window, xproto.EventMask.NoEvent, event)
+
 	def destroy(self):
-		self.conn.core.DestroyWindow(self.window)
+		self.send_event(xproto.ClientMessageData.synthetic([
+			self.monitor.atoms['WM_DELETE_WINDOW'],
+			xproto.Time.CurrentTime,
+			0, 0, 0
+		], 'I'*5))
 
 	def map(self):
 		self.conn.core.MapWindow(self.window)
 
 	def hide(self):
 		mask = xproto.ConfigWindow.X
-		self.conn.core.ConfigureWindow(self.window, mask, [-self.monitor.w])
+		self.conn.core.ConfigureWindow(self.window, mask, [-2*self.w])
 
 	def resize(self, x, y, w, h):
+		self.x = x
+		self.y = y
+		self.w = w
+		self.h = h
 		mask = xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height
 		self.conn.core.ConfigureWindow(self.window, mask, [x,y,w,h])
 
@@ -202,8 +234,16 @@ def poll(mon):
 		sys.exit(1)
 
 def configure_request(mon, e):
-	mon.conn.core.ConfigureWindow(e.window, xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height | xproto.ConfigWindow.BorderWidth, [e.x, e.y, e.width, e.height, bp])
-	mon.conn.core.ChangeWindowAttributes(e.window, xproto.CW.EventMask, [xproto.EventMask.EnterWindow])
+	c = None
+	for x in mon.clients:
+		if e.window == x.window:
+			c = x
+			break
+	if c == None:
+		mon.conn.core.ConfigureWindow(e.window, xproto.ConfigWindow.X | xproto.ConfigWindow.Y | xproto.ConfigWindow.Width | xproto.ConfigWindow.Height | xproto.ConfigWindow.BorderWidth, [e.x, e.y, e.width, e.height, bp])
+		mon.conn.core.ChangeWindowAttributes(e.window, xproto.CW.EventMask, [xproto.EventMask.EnterWindow])
+	else:
+		c.resize(c.x, c.y, c.w, c.h)
 
 def map_request(mon, e):
 	c = None
@@ -235,6 +275,8 @@ def request_handler(mon):
 			mon.next_workspace(True)
 		elif data == 'q':
 			mon.current_workspace.destroy_current_window()
+		elif data in ['1', '2', '3', '4', '5']:
+			mon.set_workspace(mon.workspaces[int(data)-1])
 		mon.conn.flush()
 		writer.close()
 	return inner
@@ -242,7 +284,7 @@ def request_handler(mon):
 async def main():
 	mon = Monitor()
 	fd = mon.conn.get_file_descriptor()
-	asyncio.get_running_loop().add_reader(fd, apply(poll, mon))
+	asyncio.get_running_loop().add_reader(fd, lambda: poll(mon))
 	server = await asyncio.start_unix_server(request_handler(mon), path='/tmp/vaswm.socket')
 	await server.serve_forever()
 
