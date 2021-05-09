@@ -7,7 +7,7 @@ import xcffib as xcb
 import xcffib.xproto as xproto
 
 CONF = {
-	'cols': 3,
+	'cols': 2,
 	'tags': ['wrk', 'www', 'cmd', 'fun', 'etc'],
 	'borderpx': 4,
 	'colours': {
@@ -90,6 +90,7 @@ class Workspace:
 				self.range = range(0, self.cols)
 			else:
 				self.range = range(i + 1 - self.cols, i + 1)
+			print(self.range)
 
 	def arrange(self):
 		if len(self.clients) == 0: return
@@ -121,12 +122,9 @@ class Workspace:
 		elif self.current_client == None:
 			i = 0
 		else:
-			i = cs.index(self.current_client)
-			i = i + 1 if i + 1 < len(cs) else 0
+			i = cs.index(self.current_client) + 1
+			if i == len(cs): i = 0
 		cs[i].focus()
-
-	def focus(self, client):
-		pass
 
 class Client:
 	def __init__(self, mon, e):
@@ -162,25 +160,18 @@ class Client:
 	def default_border(self):
 		self.set_border_colour(CONF['colours']['default'])
 
-	def set_input_focus(self):
-		pass
-		# TODO
-		#self.conn.core.SetInputFocus(xproto.InputFocus.PointerRoot, self.window, xproto.Time.CurrentTime)
-
 	def focus(self):
 		if self.workspace.current_client is self: return
 		elif not self.workspace is self.mon.current_workspace: return
 		elif self.workspace.current_client == None:
 			self.accent_border()
 			self.workspace.current_client = self
-			self.set_input_focus()
 		else:
 			i = self.workspace.clients.index(self)
 			flag = not i in self.workspace.range
 			self.workspace.current_client.unfocus()
 			self.accent_border()
 			self.workspace.current_client = self
-			self.set_input_focus()
 			if flag:
 				self.workspace.update_range()
 				self.workspace.arrange()
