@@ -11,8 +11,8 @@ CONF = {
 	'tags': ['wrk', 'www', 'cmd', 'fun', 'etc'],
 	'borderpx': 4,
 	'colours': {
-		'accent': 0xFF0000,
-		'default': 0x888888,
+		'accent': 0xFF0055,
+		'default': 0xFFEEDD,
 	},
 }
 
