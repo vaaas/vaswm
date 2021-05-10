@@ -104,6 +104,8 @@ class Workspace:
 	def arrange(self):
 		if not self.monitor.current_workspace is self: return
 		elif len(self.clients) == 0: return
+		elif len(self.clients) == 1:
+			self.clients[0].resize(-bp, -bp, self.monitor.w, self.monitor.h)
 		elif len(self.clients) <= self.cols:
 			cw = self.monitor.w // len(self.clients)
 			for (i, c) in enumerate(self.clients):
