@@ -18,6 +18,11 @@ CONF = {
 bp = CONF['borderpx']
 
 class Monitor:
+	w = None
+	h = None
+	clients = []
+	workspaces = []
+	current_workspace = None
 	def __init__(self):
 		self.conn = xcb.connect()
 		mask = xproto.EventMask.SubstructureRedirect|xproto.EventMask.SubstructureNotify
@@ -42,7 +47,6 @@ class Monitor:
 		c.workspace.update_clients()
 		c.workspace.layout.update_range()
 		if c.workspace.current_client == None: c.focus()
-		c.workspace.arrange()
 
 	def delete_client(self, c):
 		i = c.workspace.clients.index(c)
@@ -57,7 +61,6 @@ class Monitor:
 			c.workspace.clients[0].focus()
 		else:
 			c.workspace.clients[-1].focus()
-		c.workspace.arrange()
 
 	def next_workspace(self, reverse=False):
 		i = self.workspaces.index(self.current_workspace)
@@ -72,11 +75,13 @@ class Monitor:
 		for c in self.current_workspace.clients:
 			c.hide()
 		self.current_workspace = w
-		w.arrange()
+		w.layout.arrange()
 		if w.current_client:
 			w.current_client.set_input_focus()
 
 class Layout:
+	workspace = None
+	range = None
 	def __init__(self, workspace):
 		self.workspace = workspace
 		self.range = range(0,0)
@@ -84,9 +89,10 @@ class Layout:
 	def arrange(self): pass
 
 class ColumnarLayout(Layout):
+	max = 1
 	def __init__(self, workspace, max=1):
 		super().__init__(workspace)
-		self.max = 1
+		self.max = max
 
 	def update_range(self):
 		if len(self.workspace.clients) == 0 or self.workspace.current_client == None:
@@ -97,6 +103,7 @@ class ColumnarLayout(Layout):
 				self.range = range(0, self.max)
 			else:
 				self.range = range(i + 1 - self.max, i + 1)
+		self.arrange()
 	
 	def arrange(self):
 		if not self.workspace.monitor.current_workspace is self.workspace: return
@@ -139,8 +146,9 @@ class ThreeColumns(ColumnarLayout):
 
 class FourColumns(ColumnarLayout):
 	def __init__(self, workspace):
-		super().__init__(workspace, 2)
+		super().__init__(workspace, 4)
 
+"""
 class Fullscreen(Layout):
 	def __init__(self, workspace):
 		super().__init__(workspace)
@@ -154,17 +162,30 @@ class Fullscreen(Layout):
 					c.resize(-bp, -bp, self.workspace.monitor.w, self.workspace.monitor.h)
 				else:
 					c.hide()
+"""
 
 layouts = [OneColumn, TwoColumns, ThreeColumns, FourColumns]
 
 class Workspace:
+	current_client = None
+	monitor = None
+	tag = None
+	clients = []
+	layout = None
 	def __init__(self, mon, tag):
-		self.current_client = None
 		self.monitor = mon
 		self.tag = tag
-		self.clients = []
 		self.layout = ThreeColumns(self)
 		self.update_clients()
+		self.layout.update_range()
+		
+	def next_layout(self, reverse=False):
+		i = layouts.index(type(self.layout))
+		if reverse:
+			i = i - 1
+		else:
+			i = i + 1 if i + 1 < len(layouts) else 0
+		self.layout = layouts[i](self)
 		self.layout.update_range()
 
 	def update_clients(self):
@@ -186,6 +207,14 @@ class Workspace:
 		self.clients[i].set_input_focus()
 
 class Client:
+	conn = None
+	monitor = None
+	window = None
+	workspace = None
+	x = None
+	y = None
+	w = None
+	h = None
 	def __init__(self, mon, e):
 		self.conn = mon.conn
 		self.monitor = mon
@@ -251,7 +280,6 @@ class Client:
 		self.accent_border()
 		if not self.workspace.clients.index(self) in self.workspace.layout.range:
 			self.workspace.layout.update_range()
-			self.workspace.arrange()
 
 	def unfocus(self):
 		self.default_border()
@@ -329,6 +357,10 @@ def request_handler(mon):
 			mon.next_workspace(True)
 		elif data == 'q':
 			mon.current_workspace.destroy_current_window()
+		elif data == 'l':
+			mon.current_workspace.next_layout()
+		elif data == 'L':
+			mon.current_workspace.next_layout(True)
 		elif data in ['1', '2', '3', '4', '5']:
 			mon.set_workspace(mon.workspaces[int(data)-1])
 		mon.conn.flush()
