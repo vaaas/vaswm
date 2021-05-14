@@ -7,7 +7,6 @@ import xcffib as xcb
 import xcffib.xproto as xproto
 
 CONF = {
-	'cols': 4,
 	'tags': ['wrk', 'www', 'cmd', 'fun', 'etc'],
 	'borderpx': 4,
 	'colours': {
@@ -41,7 +40,7 @@ class Monitor:
 		except:
 			self.clients.append(c)
 		c.workspace.update_clients()
-		c.workspace.update_range()
+		c.workspace.layout.update_range()
 		if c.workspace.current_client == None: c.focus()
 		c.workspace.arrange()
 
@@ -51,7 +50,7 @@ class Monitor:
 		if c.workspace.current_client is c:
 			c.workspace.current_client = None
 		c.workspace.update_clients()
-		c.workspace.update_range()
+		c.workspace.layout.update_range()
 		if len(c.workspace.clients) == 0:
 			return
 		elif i == 0:
@@ -77,46 +76,99 @@ class Monitor:
 		if w.current_client:
 			w.current_client.set_input_focus()
 
+class Layout:
+	def __init__(self, workspace):
+		self.workspace = workspace
+		self.range = range(0,0)
+	def update_range(self): pass
+	def arrange(self): pass
+
+class ColumnarLayout(Layout):
+	def __init__(self, workspace, max=1):
+		super().__init__(workspace)
+		self.max = 1
+
+	def update_range(self):
+		if len(self.workspace.clients) == 0 or self.workspace.current_client == None:
+			self.range = range(0,0)
+		else:
+			i = self.workspace.clients.index(self.workspace.current_client)
+			if i < self.max:
+				self.range = range(0, self.max)
+			else:
+				self.range = range(i + 1 - self.max, i + 1)
+	
+	def arrange(self):
+		if not self.workspace.monitor.current_workspace is self.workspace: return
+		elif len(self.workspace.clients) == 0: return
+		elif len(self.workspace.clients) == 1:
+			self.workspace.clients[0].resize(-bp, -bp, self.workspace.monitor.w, self.workspace.monitor.h)
+		elif len(self.workspace.clients) <= self.max:
+			cw = self.workspace.monitor.w // len(self.workspace.clients)
+			for (i, c) in enumerate(self.workspace.clients):
+				c.resize(i*(cw-bp*2) + bp*2*i, 0, cw-bp*2, self.workspace.monitor.h - bp*2)
+		else:
+			cw = self.workspace.monitor.w // self.max
+			for (i, c) in enumerate(self.workspace.clients):
+				if i in self.range:
+					c.resize((i-self.range.start)*(cw-bp*2) + bp*2*(i-self.range.start), 0, cw-bp*2, self.workspace.monitor.h - bp*2)
+				else:
+					c.hide()
+
+class OneColumn(ColumnarLayout):
+	def __init__(self, workspace):
+		super().__init__(workspace, 1)
+	
+	def arrange(self):
+		if not self.workspace.monitor.current_workspace is self.workspace: return
+		elif len(self.workspace.clients) == 0: return
+		else:
+			for c in self.workspace.clients:
+				if c is self.workspace.current_client:
+					c.resize(-bp, -bp, self.workspace.monitor.w, self.workspace.monitor.h)
+				else:
+					c.hide()
+
+class TwoColumns(ColumnarLayout):
+	def __init__(self, workspace):
+		super().__init__(workspace, 2)
+
+class ThreeColumns(ColumnarLayout):
+	def __init__(self, workspace):
+		super().__init__(workspace, 3)
+
+class FourColumns(ColumnarLayout):
+	def __init__(self, workspace):
+		super().__init__(workspace, 2)
+
+class Fullscreen(Layout):
+	def __init__(self, workspace):
+		super().__init__(workspace)
+		
+	def arrange(self):
+		if not self.workspace.monitor.current_workspace is self.workspace: return
+		elif len(self.workspace.clients) == 0: return
+		else:
+			for c in self.workspace.clients:
+				if c is self.workspace.current_client:
+					c.resize(-bp, -bp, self.workspace.monitor.w, self.workspace.monitor.h)
+				else:
+					c.hide()
+
+layouts = [OneColumn, TwoColumns, ThreeColumns, FourColumns]
+
 class Workspace:
 	def __init__(self, mon, tag):
 		self.current_client = None
 		self.monitor = mon
 		self.tag = tag
-		self.cols = CONF['cols']
 		self.clients = []
-		self.range = range(0, 0)
+		self.layout = ThreeColumns(self)
 		self.update_clients()
-		self.update_range()
+		self.layout.update_range()
 
 	def update_clients(self):
 		self.clients = [x for x in self.monitor.clients if x.workspace is self]
-
-	def update_range(self):
-		if len(self.clients) == 0 or self.current_client == None:
-			self.range = range(0,0)
-		else:
-			i = self.clients.index(self.current_client)
-			if i < self.cols:
-				self.range = range(0, self.cols)
-			else:
-				self.range = range(i + 1 - self.cols, i + 1)
-
-	def arrange(self):
-		if not self.monitor.current_workspace is self: return
-		elif len(self.clients) == 0: return
-		elif len(self.clients) == 1:
-			self.clients[0].resize(-bp, -bp, self.monitor.w, self.monitor.h)
-		elif len(self.clients) <= self.cols:
-			cw = self.monitor.w // len(self.clients)
-			for (i, c) in enumerate(self.clients):
-				c.resize(i*(cw-bp*2) + bp*2*i, 0, cw-bp*2, self.monitor.h - bp*2)
-		else:
-			cw = self.monitor.w // self.cols
-			for (i, c) in enumerate(self.clients):
-				if i in self.range:
-					c.resize((i-self.range.start)*(cw-bp*2) + bp*2*(i-self.range.start), 0, cw-bp*2, self.monitor.h - bp*2)
-				else:
-					c.hide()
 
 	def destroy_current_window(self):
 		if not self.current_client: return
@@ -197,8 +249,8 @@ class Client:
 		self.workspace.current_client = self
 		self.set_input_focus()
 		self.accent_border()
-		if not self.workspace.clients.index(self) in self.workspace.range:
-			self.workspace.update_range()
+		if not self.workspace.clients.index(self) in self.workspace.layout.range:
+			self.workspace.layout.update_range()
 			self.workspace.arrange()
 
 	def unfocus(self):
